@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>옥탑밭 작물 DB</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍅</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useState, useRef } = React;
+
+      // ---------------- 유틸 ----------------
+      function monthInRange(m, start, end) {
+        if (!start || !end) return false;
+        if (start <= end) return m >= start && m <= end;
+        return m >= start || m <= end; // 연도 걸침 처리
+      }
+      function clampMonth(v) {
+        const n = Number(v);
+        if (Number.isNaN(n)) return 1;
+        return Math.min(12, Math.max(1, Math.floor(n)));
+      }
+
+      // CSV 유틸 (RFC4180 스타일 간단 구현)
+      function toCSV(rows) {
+        const esc = (s) => {
+          const str = String(s ?? "");
+          if (/[",\n]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
+          return str;
+        };
+        return rows.map(r => r.map(esc).join(",")).join("\n");
+      }
+      function parseCSV(text) {
+        const out = [];
+        let row = [], field = "", i = 0, inQuotes = false;
+        while (i < text.length) {
+          const ch = text[i];
+          if (inQuotes) {
+            if (ch === '"') {
+              if (text[i+1] === '"') { field += '"'; i += 2; continue; }
+              inQuotes = false; i++; continue;
+            } else { field += ch; i++; continue; }
+          } else {
+            if (ch === '"') { inQuotes = true; i++; continue; }
+            if (ch === ',') { row.push(field); field = ""; i++; continue; }
+            if (ch === '\n' || ch === '\r') {
+              // handle \r\n and \n
+              if (ch === '\r' && text[i+1] === '\n') i++;
+              row.push(field); out.push(row); row = []; field = ""; i++; continue;
+            }
+            field += ch; i++;
+          }
+        }
+        // last field
+        row.push(field); out.push(row);
+        // remove empty trailing line if any
+        if (out.length && out[out.length-1].length===1 && out[out.length-1][0]==="") out.pop();
+        return out;
+      }
+
+      // ---------------- 기본값 ----------------
+      const DEFAULT_FAMILIES = [
+        "장미과","가지과","박과","미나리과","십자화과","벼과","콩과","꿀풀과","국화과","비름과"
+      ];
+      const DEFAULT_TYPES = [
+        "과채류","엽채류","곡류","근채류","결구채류","화채류","허브류","두류"
+      ];
+
+      const SEED = [
+        { id: crypto.randomUUID(), name: "토마토", family: "가지과", type: "과채류", plantStart: 3, plantEnd: 5, harvestStart: 6, harvestEnd: 9, addedBy: "기본", tags: ["여름작물"] },
+        { id: crypto.randomUUID(), name: "방울토마토", family: "가지과", type: "과채류", plantStart: 3, plantEnd: 5, harvestStart: 6, harvestEnd: 10, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "고추", family: "가지과", type: "과채류", plantStart: 3, plantEnd: 5, harvestStart: 7, harvestEnd: 10, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "오이", family: "박과", type: "과채류", plantStart: 4, plantEnd: 6, harvestStart: 6, harvestEnd: 9, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "가지", family: "가지과", type: "과채류", plantStart: 3, plantEnd: 5, harvestStart: 6, harvestEnd: 9, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "수박", family: "박과", type: "과채류", plantStart: 4, plantEnd: 5, harvestStart: 7, harvestEnd: 8, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "참외", family: "박과", type: "과채류", plantStart: 4, plantEnd: 5, harvestStart: 7, harvestEnd: 8, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "상추", family: "국화과", type: "엽채류", plantStart: 3, plantEnd: 10, harvestStart: 4, harvestEnd: 11, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "시금치", family: "비름과", type: "엽채류", plantStart: 3, plantEnd: 5, harvestStart: 4, harvestEnd: 6, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "배추", family: "십자화과", type: "결구채류", plantStart: 8, plantEnd: 9, harvestStart: 10, harvestEnd: 11, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "무", family: "십자화과", type: "근채류", plantStart: 8, plantEnd: 9, harvestStart: 10, harvestEnd: 11, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "당근", family: "미나리과", type: "근채류", plantStart: 3, plantEnd: 6, harvestStart: 6, harvestEnd: 10, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "파슬리", family: "미나리과", type: "허브류", plantStart: 3, plantEnd: 6, harvestStart: 5, harvestEnd: 10, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "바질", family: "꿀풀과", type: "허브류", plantStart: 4, plantEnd: 6, harvestStart: 6, harvestEnd: 9, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "강낭콩", family: "콩과", type: "두류", plantStart: 4, plantEnd: 6, harvestStart: 7, harvestEnd: 9, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "완두콩", family: "콩과", type: "두류", plantStart: 3, plantEnd: 4, harvestStart: 5, harvestEnd: 6, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "옥수수", family: "벼과", type: "곡류", plantStart: 4, plantEnd: 5, harvestStart: 7, harvestEnd: 8, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "브로콜리", family: "십자화과", type: "화채류", plantStart: 3, plantEnd: 5, harvestStart: 6, harvestEnd: 10, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "루꼴라", family: "십자화과", type: "엽채류", plantStart: 3, plantEnd: 9, harvestStart: 4, harvestEnd: 11, addedBy: "기본", tags: [] },
+        { id: crypto.randomUUID(), name: "고수", family: "미나리과", type: "허브류", plantStart: 3, plantEnd: 5, harvestStart: 5, harvestEnd: 7, addedBy: "기본", tags: [] }
+      ];
+
+      const LS_KEY = "otoba_crops_v6";          // 작물 저장 키 (CSV 등 기능 추가로 버전업)
+      const LS_KEY_OPTS = "otoba_crops_opts_v1"; // 사용자 정의 과/종류 저장 키
+
+      function Tabs({ active, onChange }) {
+        const item = (key, label) => (
+          <button
+            onClick={() => onChange(key)}
+            className={
+              "px-4 py-2 text-sm rounded-t-xl border-b-2 " +
+              (active === key ? "border-black font-semibold bg-white" : "border-transparent text-gray-500 hover:text-gray-800")
+            }
+          >{label}</button>
+        );
+        return (
+          <div className="flex gap-2">
+            {item("search", "검색 · 리스트")}
+            {item("register", "등록하기")}
+          </div>
+        );
+      }
+
+      function App() {
+        const [crops, setCrops] = useState([]);
+        const [families, setFamilies] = useState(DEFAULT_FAMILIES);
+        const [types, setTypes] = useState(DEFAULT_TYPES);
+
+        const [name, setName] = useState("");
+        const [family, setFamily] = useState("");
+        const [type, setType] = useState("");
+        const [plantStart, setPlantStart] = useState("");
+        const [plantEnd, setPlantEnd] = useState("");
+        const [harvestStart, setHarvestStart] = useState("");
+        const [harvestEnd, setHarvestEnd] = useState("");
+        const [addedBy, setAddedBy] = useState("");
+        const [tagsInput, setTagsInput] = useState("");
+
+        const [mode, setMode] = useState("plant");
+        const [queryMonth, setQueryMonth] = useState("");
+        const [textFilter, setTextFilter] = useState("");
+        const [familyFilter, setFamilyFilter] = useState("전체");
+        const [typeFilter, setTypeFilter] = useState("전체");
+        const [editingId, setEditingId] = useState(null);
+        const [activeTab, setActiveTab] = useState("search");
+        const [allView, setAllView] = useState(false);
+
+        const fileInputRef = useRef();
+
+        // 초기 로드 (작물 + 사용자 정의 옵션)
+        useEffect(() => {
+          const raw = localStorage.getItem(LS_KEY);
+          if (raw) {
+            try { const parsed = JSON.parse(raw); if (Array.isArray(parsed)) setCrops(parsed); } catch {}
+          } else {
+            setCrops(SEED);
+          }
+          const opts = localStorage.getItem(LS_KEY_OPTS);
+          if (opts) {
+            try {
+              const parsed = JSON.parse(opts);
+              const savedFamilies = Array.isArray(parsed?.families) ? parsed.families : [];
+              const savedTypes = Array.isArray(parsed?.types) ? parsed.types : [];
+              setFamilies(Array.from(new Set([...DEFAULT_FAMILIES, ...savedFamilies])).sort());
+              setTypes(Array.from(new Set([...DEFAULT_TYPES, ...savedTypes])).sort());
+            } catch {}
+          }
+        }, []);
+
+        // 저장
+        useEffect(() => { localStorage.setItem(LS_KEY, JSON.stringify(crops)); }, [crops]);
+        useEffect(() => { localStorage.setItem(LS_KEY_OPTS, JSON.stringify({ families, types })); }, [families, types]);
+
+        const now = new Date();
+        const defaultMonth = now.getMonth() + 1;
+        const monthToCheck = useMemo(() => {
+          if (queryMonth) {
+            const m = Number(queryMonth);
+            if (!Number.isNaN(m) && m >= 1 && m <= 12) return m;
+          }
+          return defaultMonth;
+        }, [queryMonth, defaultMonth]);
+
+        // 모든 태그 수집 (자동완성용)
+        const allTags = useMemo(() => {
+          const s = new Set();
+          crops.forEach(c => (c.tags||[]).forEach(t => s.add(t)));
+          return Array.from(s).sort((a,b)=>a.localeCompare(b));
+        }, [crops]);
+
+        // 현재 입력에서 마지막 토큰으로 추천 계산
+        const tagTokens = useMemo(() => tagsInput.split(',').map(t=>t.trim()).filter(Boolean), [tagsInput]);
+        const lastToken = useMemo(() => {
+          const parts = tagsInput.split(',');
+          return parts[parts.length-1].trim();
+        }, [tagsInput]);
+        const tagSuggestions = useMemo(() => {
+          if (!lastToken) return [];
+          const lower = lastToken.toLowerCase();
+          const existing = new Set(tagTokens.map(t=>t.toLowerCase()));
+          return allTags.filter(t => t.toLowerCase().startsWith(lower) && !existing.has(t.toLowerCase())).slice(0,8);
+        }, [allTags, lastToken, tagTokens]);
+        function addTagFromSuggestion(t){
+          const tokens = tagsInput.split(',').map(s=>s.trim()).filter(Boolean);
+          if (!tokens.includes(t)) tokens.push(t);
+          setTagsInput(tokens.join(', ') + ', ');
+        }
+        function removeTagAt(idx){
+          const tokens = tagsInput.split(',').map(s=>s.trim()).filter(Boolean);
+          tokens.splice(idx,1);
+          setTagsInput(tokens.join(', '));
+        }
+
+        // 히트맵 데이터
+        const monthStats = useMemo(() => {
+          const plant = Array(12).fill(0), harvest = Array(12).fill(0);
+          crops.forEach(c => { for (let m=1;m<=12;m++){ if(monthInRange(m,c.plantStart,c.plantEnd)) plant[m-1]++; if(monthInRange(m,c.harvestStart,c.harvestEnd)) harvest[m-1]++; } });
+          const maxP = Math.max(...plant, 1), maxH = Math.max(...harvest, 1);
+          return { plant, harvest, maxP, maxH };
+        }, [crops]);
+        const intensity = (v,max)=>`hsl(140 60% ${95 - Math.round((v/(max||1))*55)}%)`;
+        const intensityHarvest = (v,max)=>`hsl(20 80% ${95 - Math.round((v/(max||1))*55)}%)`;
+
+        const filtered = useMemo(() => {
+          const qs = textFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+          return crops.filter(c => {
+            if (familyFilter !== "전체" && c.family !== familyFilter) return false;
+            if (typeFilter !== "전체" && c.type !== typeFilter) return false;
+            if (qs.length) {
+              const hay = [c.name, c.family, c.type, c.addedBy, ...(c.tags||[])].join(" ").toLowerCase();
+              if (!qs.every(w => hay.includes(w))) return false;
+            }
+            if (allView) return true;
+            return mode === "plant" ? monthInRange(monthToCheck, c.plantStart, c.plantEnd)
+                                     : monthInRange(monthToCheck, c.harvestStart, c.harvestEnd);
+          });
+        }, [crops, textFilter, familyFilter, typeFilter, mode, monthToCheck, allView]);
+
+        function resetForm(){ setName(""); setFamily(""); setType(""); setPlantStart(""); setPlantEnd(""); setHarvestStart(""); setHarvestEnd(""); setAddedBy(""); setTagsInput(""); setEditingId(null); }
+
+        function handleAddFamily(){
+          const v = (prompt("추가할 과 이름을 입력하세요")||"").trim();
+          if(!v) return; if (families.map(s=>s.toLowerCase()).includes(v.toLowerCase())) { alert("이미 존재합니다"); return; }
+          setFamilies(prev=>Array.from(new Set([...prev, v])).sort());
+        }
+        function handleAddType(){
+          const v = (prompt("추가할 종류를 입력하세요")||"").trim();
+          if(!v) return; if (types.map(s=>s.toLowerCase()).includes(v.toLowerCase())) { alert("이미 존재합니다"); return; }
+          setTypes(prev=>Array.from(new Set([...prev, v])).sort());
+        }
+
+        function handleSubmit(e){
+          e.preventDefault();
+          const ps = clampMonth(plantStart), pe = clampMonth(plantEnd), hs = clampMonth(harvestStart), he = clampMonth(harvestEnd);
+          if(!name.trim()||!family.trim()||!type.trim()||!addedBy.trim()) { alert("이름, 과, 종류, 등록자를 입력하세요"); return; }
+          const newCrop = { id: editingId ?? crypto.randomUUID(), name: name.trim(), family: family.trim(), type: type.trim(), plantStart: ps, plantEnd: pe, harvestStart: hs, harvestEnd: he, addedBy: addedBy.trim(), tags: tagsInput.split(",").map(t=>t.trim()).filter(Boolean) };
+          setCrops(prev => editingId ? prev.map(c=>c.id===editingId?newCrop:c) : [newCrop, ...prev]);
+          resetForm(); setActiveTab("search");
+        }
+        function handleEdit(c){ setActiveTab("register"); setEditingId(c.id); setName(c.name); setFamily(c.family); setType(c.type); setPlantStart(String(c.plantStart)); setPlantEnd(String(c.plantEnd)); setHarvestStart(String(c.harvestStart)); setHarvestEnd(String(c.harvestEnd)); setAddedBy(c.addedBy); setTagsInput((c.tags||[]).join(", ")); window.scrollTo({top:0, behavior:"smooth"}); }
+        function handleDelete(id){ if(!confirm("삭제할까요?")) return; setCrops(prev=>prev.filter(c=>c.id!==id)); if(editingId===id) resetForm(); }
+
+        // CSV 내보내기
+        function exportCSV(){
+          const header = ["name","family","type","plantStart","plantEnd","harvestStart","harvestEnd","addedBy","tags"];
+          const rows = [header, ...crops.map(c => [
+            c.name, c.family, c.type, c.plantStart, c.plantEnd, c.harvestStart, c.harvestEnd, c.addedBy, (c.tags||[]).join(';')
+          ])];
+          const csv = toCSV(rows);
+          const blob = new Blob(["\uFEFF" + csv], {type: 'text/csv;charset=utf-8;'}); // BOM 포함 (엑셀 호환)
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = `옥탑밭_작물DB_${new Date().toISOString().slice(0,10)}.csv`;
+          document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+        }
+
+        // CSV 가져오기 (추가/덮어쓰기 선택)
+        function importCSV(mode, file){
+          const reader = new FileReader();
+          reader.onload = () => {
+            try{
+              const text = reader.result;
+              const rows = parseCSV(text);
+              if (!rows.length) return alert('비어있는 파일입니다');
+              const header = rows[0].map(h=>h.trim());
+              const idx = (name) => header.indexOf(name);
+              const need = ["name","family","type","plantStart","plantEnd","harvestStart","harvestEnd","addedBy","tags"];
+              if (!need.every(n=>idx(n) !== -1)) return alert('헤더가 맞지 않습니다. 필요한 헤더: ' + need.join(', '));
+              const imported = rows.slice(1).filter(r=>r.length>1).map(r=>({
+                id: crypto.randomUUID(),
+                name: r[idx('name')]?.trim()||'',
+                family: r[idx('family')]?.trim()||'',
+                type: r[idx('type')]?.trim()||'',
+                plantStart: clampMonth(r[idx('plantStart')]),
+                plantEnd: clampMonth(r[idx('plantEnd')]),
+                harvestStart: clampMonth(r[idx('harvestStart')]),
+                harvestEnd: clampMonth(r[idx('harvestEnd')]),
+                addedBy: r[idx('addedBy')]?.trim()||'',
+                tags: (r[idx('tags')]||'').split(';').map(t=>t.trim()).filter(Boolean)
+              }));
+              if (mode==='replace') setCrops(imported);
+              else setCrops(prev=>[...imported, ...prev]);
+              alert(`가져오기 완료: ${imported.length}건`);
+            }catch(e){ console.error(e); alert('가져오기에 실패했습니다'); }
+          };
+          reader.readAsText(file, 'utf-8');
+        }
+
+        function onImportClick(mode){
+          const input = fileInputRef.current; if (!input) return;
+          input.onchange = (e)=>{
+            const file = e.target.files?.[0];
+            if (file) importCSV(mode, file);
+            input.value = '';
+          };
+          input.click();
+        }
+
+        return (
+          <div className="min-h-screen p-6">
+            <input ref={fileInputRef} type="file" accept=".csv,text/csv" className="hidden" />
+            <header className="mb-4 flex items-center gap-3 flex-wrap">
+              <div>
+                <h1 className="text-2xl font-extrabold">옥탑밭 작물 DB</h1>
+                <p className="text-sm text-gray-600">로컬 저장 · 20개 기본 데이터 · 과/종류 드롭다운(사용자 추가) · CSV · 태그 자동완성</p>
+              </div>
+              <div className="ml-auto flex gap-2">
+                <button onClick={exportCSV} className="px-3 py-2 rounded-lg border hover:bg-gray-50" title="현재 목록을 CSV로 다운로드">CSV 내보내기</button>
+                <button onClick={()=>onImportClick('append')} className="px-3 py-2 rounded-lg border hover:bg-gray-50" title="CSV를 읽어 현재 목록에 추가">가져오기(추가)</button>
+                <button onClick={()=>{ if(confirm('CSV로 덮어쓰시겠어요? 현재 데이터가 지워집니다.')) onImportClick('replace'); }} className="px-3 py-2 rounded-lg border hover:bg-gray-50" title="CSV로 현재 목록을 교체">가져오기(덮어쓰기)</button>
+              </div>
+            </header>
+
+            <div className="bg-white rounded-2xl shadow p-4">
+              <Tabs active={activeTab} onChange={setActiveTab} />
+              <div className="mt-4 border-t" />
+
+              {/* 탭1: 검색/리스트 */}
+              {activeTab === "search" && (
+                <section className="pt-4">
+                  <div className="flex flex-wrap items-end gap-3 mb-4">
+                    <div className="flex flex-col">
+                      <label className="text-xs text-gray-500 mb-1">모드</label>
+                      <select value={mode} onChange={(e) => setMode(e.target.value)} className="border rounded-lg px-3 py-2">
+                        <option value="plant">심을 수 있는</option>
+                        <option value="harvest">수확 가능한</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col">
+                      <label className="text-xs text-gray-500 mb-1">월 (1~12)</label>
+                      <input type="number" min={1} max={12} value={queryMonth} onChange={(e) => setQueryMonth(e.target.value)} placeholder={(new Date().getMonth()+1).toString()} className="border rounded-lg px-3 py-2 w-28" />
+                    </div>
+                    <div className="flex flex-col">
+                      <label className="text-xs text-gray-500 mb-1">종류</label>
+                      <select value={typeFilter} onChange={(e)=> setTypeFilter(e.target.value)} className="border rounded-lg px-3 py-2">
+                        {["전체", ...types].map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex flex-col">
+                      <label className="text-xs text-gray-500 mb-1">과(패밀리)</label>
+                      <select value={familyFilter} onChange={(e) => setFamilyFilter(e.target.value)} className="border rounded-lg px-3 py-2">
+                        {["전체", ...families].map(f => <option key={f} value={f}>{f}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2 ml-auto">
+                      <input id="allView" type="checkbox" className="scale-110" checked={allView} onChange={(e)=>setAllView(e.target.checked)} />
+                      <label htmlFor="allView" className="text-sm text-gray-700">전체보기 (월/모드 무시)</label>
+                    </div>
+                    <div className="flex flex-col grow min-w-[240px]">
+                      <label className="text-xs text-gray-500 mb-1">다중검색 (공백 구분: 이름/과/종류/등록자/태그)</label>
+                      <input type="text" value={textFilter} onChange={(e) => setTextFilter(e.target.value)} className="border rounded-lg px-3 py-2" placeholder="예: 박과 과채류 관리자" />
+                    </div>
+                  </div>
+
+                  {/* 히트맵 */}
+                  <div className="grid md:grid-cols-2 gap-4 mb-4">
+                    <div className="bg-white border rounded-xl p-4">
+                      <h4 className="font-semibold mb-2">월별 파종 히트맵</h4>
+                      <div className="grid grid-cols-12 gap-1">
+                        {monthStats.plant.map((v,i)=> (
+                          <button key={i} onClick={()=>{ setMode("plant"); setQueryMonth(String(i+1)); setAllView(false); }} title={`${i+1}월: 파종 ${v}종`} className="h-10 rounded" style={{background:intensity(v, monthStats.maxP)}}>
+                            <span className="text-[10px] block text-center">{i+1}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="bg-white border rounded-xl p-4">
+                      <h4 className="font-semibold mb-2">월별 수확 히트맵</h4>
+                      <div className="grid grid-cols-12 gap-1">
+                        {monthStats.harvest.map((v,i)=> (
+                          <button key={i} onClick={()=>{ setMode("harvest"); setQueryMonth(String(i+1)); setAllView(false); }} title={`${i+1}월: 수확 ${v}종`} className="h-10 rounded" style={{background:intensityHarvest(v, monthStats.maxH)}}>
+                            <span className="text-[10px] block text-center">{i+1}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">결과 ({filtered.length}개)</h3>
+                  <div className="overflow-auto rounded-xl border">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-gray-100">
+                        <tr>
+                          <th className="text-left p-2">이름</th>
+                          <th className="text-left p-2">과(패밀리)</th>
+                          <th className="text-left p-2">종류</th>
+                          <th className="text-left p-2">심는 시기</th>
+                          <th className="text-left p-2">수확 시기</th>
+                          <th className="text-left p-2">태그</th>
+                          <th className="text-left p-2">등록자</th>
+                          <th className="text-left p-2">관리</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filtered.map((c) => (
+                          <tr key={c.id} className="border-t hover:bg-gray-50"
+                              title={`과: ${c.family} / 종류: ${c.type}\n파종: ${c.plantStart}~${c.plantEnd}월, 수확: ${c.harvestStart}~${c.harvestEnd}월\n태그: ${(c.tags||[]).join(', ')}`}
+                          >
+                            <td className="p-2 font-medium">{c.name}</td>
+                            <td className="p-2">{c.family}</td>
+                            <td className="p-2">{c.type}</td>
+                            <td className="p-2">{c.plantStart}~{c.plantEnd}월</td>
+                            <td className="p-2">{c.harvestStart}~{c.harvestEnd}월</td>
+                            <td className="p-2">
+                              <div className="flex flex-wrap gap-1">{(c.tags||[]).map(t => <span key={t} className="px-2 py-0.5 text-xs rounded-full bg-gray-100" title={`태그: ${t}`}>#{t}</span>)}</div>
+                            </td>
+                            <td className="p-2">{c.addedBy}</td>
+                            <td className="p-2">
+                              <button onClick={() => handleEdit(c)} className="px-2 py-1 text-xs rounded-lg bg-blue-50 hover:bg-blue-100">수정</button>
+                              <button onClick={() => handleDelete(c.id)} className="ml-2 px-2 py-1 text-xs rounded-lg bg-red-50 hover:bg-red-100">삭제</button>
+                            </td>
+                          </tr>
+                        ))}
+                        {filtered.length === 0 && (
+                          <tr>
+                            <td className="p-3 text-center text-gray-500" colSpan={8}>검색 결과가 없습니다.</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+
+              {/* 탭2: 등록하기 */}
+              {activeTab === "register" && (
+                <section className="pt-4">
+                  <h2 className="font-bold mb-3">작물 등록/수정</h2>
+                  <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <input value={name} onChange={(e) => setName(e.target.value)} placeholder="작물 이름" className="border rounded-lg px-3 py-2" />
+
+                    <div className="flex flex-col">
+                      <label className="text-xs text-gray-500 mb-1">과(패밀리)</label>
+                      <div className="flex gap-2">
+                        <select value={family} onChange={(e)=> setFamily(e.target.value)} className="border rounded-lg px-3 py-2 w-full">
+                          <option value="">선택</option>
+                          {families.map(f => <option key={f} value={f}>{f}</option>)}
+                        </select>
+                        <button type="button" className="px-3 py-2 rounded-lg border" onClick={handleAddFamily}>+ 추가</button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col">
+                      <label className="text-xs text-gray-500 mb-1">종류</label>
+                      <div className="flex gap-2">
+                        <select value={type} onChange={(e)=> setType(e.target.value)} className="border rounded-lg px-3 py-2 w-full">
+                          <option value="">선택</option>
+                          {types.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                        <button type="button" className="px-3 py-2 rounded-lg border" onClick={handleAddType}>+ 추가</button>
+                      </div>
+                    </div>
+
+                    <input type="number" min={1} max={12} value={plantStart} onChange={(e) => setPlantStart(e.target.value)} placeholder="심는 시기 시작(월)" className="border rounded-lg px-3 py-2" />
+                    <input type="number" min={1} max={12} value={plantEnd} onChange={(e) => setPlantEnd(e.target.value)} placeholder="심는 시기 끝(월)" className="border rounded-lg px-3 py-2" />
+                    <input type="number" min={1} max={12} value={harvestStart} onChange={(e) => setHarvestStart(e.target.value)} placeholder="수확 시기 시작(월)" className="border rounded-lg px-3 py-2" />
+                    <input type="number" min={1} max={12} value={harvestEnd} onChange={(e) => setHarvestEnd(e.target.value)} placeholder="수확 시기 끝(월)" className="border rounded-lg px-3 py-2" />
+
+                    <input value={addedBy} onChange={(e) => setAddedBy(e.target.value)} placeholder="등록자" className="border rounded-lg px-3 py-2" />
+
+                    {/* 태그 입력 + 자동완성 */}
+                    <div className="sm:col-span-2">
+                      <label className="text-xs text-gray-500 mb-1">태그 (쉼표로 구분)</label>
+                      <input value={tagsInput} onChange={(e)=> setTagsInput(e.target.value)} placeholder="예: 여름작물, 덩굴, 초보추천" className="border rounded-lg px-3 py-2 w-full" />
+                      {/* 현재 토큰들(칩) */}
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {tagTokens.map((t,idx)=> (
+                          <span key={idx} className="px-2 py-1 text-xs rounded-full bg-gray-100 flex items-center gap-1" title={`태그: ${t}`}>
+                            #{t}
+                            <button type="button" className="ml-1 text-gray-500 hover:text-black" onClick={()=>removeTagAt(idx)} aria-label="태그 제거">×</button>
+                          </span>
+                        ))}
+                      </div>
+                      {/* 추천 목록 */}
+                      {tagSuggestions.length>0 && (
+                        <div className="mt-2 p-2 border rounded-lg bg-white shadow-sm">
+                          <div className="text-xs text-gray-500 mb-1">추천 태그</div>
+                          <div className="flex flex-wrap gap-2">
+                            {tagSuggestions.map(t => (
+                              <button type="button" key={t} onClick={()=>addTagFromSuggestion(t)} className="px-2 py-1 text-xs rounded-full border hover:bg-gray-50" title={`태그 추가: ${t}`}>#{t}</button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="col-span-full flex gap-2 mt-1">
+                      <button type="submit" className="px-4 py-2 rounded-xl bg-black text-white hover:opacity-90">{editingId ? "수정 저장" : "등록"}</button>
+                      {editingId && (
+                        <button type="button" className="px-4 py-2 rounded-xl border hover:bg-gray-50" onClick={() => { setEditingId(null); resetForm(); }}>취소</button>
+                      )}
+                    </div>
+                  </form>
+
+                  <p className="text-xs text-gray-500 mt-3">* 월 범위는 연도를 넘겨도 됩니다. (예: 11~2월)</p>
+                </section>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
